@@ -1,5 +1,17 @@
 # vercel-runtime
 
+## 0.13.1
+
+### Patch Changes
+
+- 894e7d4: [python/vercel-workers] refactor framework-specific logic into vercel-workers
+
+## 0.13.0
+
+### Minor Changes
+
+- Support dynamically specifying crons from a python service ([#15930](https://github.com/vercel/vercel/pull/15930))
+
 ## 0.12.0
 
 ### Minor Changes

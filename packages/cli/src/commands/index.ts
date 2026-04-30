@@ -1,5 +1,6 @@
 import { agentCommand } from './agent/command';
 import { activityCommand } from './activity/command';
+import { aiGatewayCommand } from './ai-gateway/command';
 import { alertsCommand } from './alerts/command';
 import { aliasCommand } from './alias/command';
 import { apiCommand } from './api/command';
@@ -8,10 +9,12 @@ import { buildCommand } from './build/command';
 import { buyCommand } from './buy/command';
 import { cacheCommand } from './cache/command';
 import { certsCommand } from './certs/command';
+import { connexCommand } from './connex/command';
 import { contractCommand } from './contract/command';
 import { cronsCommand } from './crons/command';
 import { curlCommand } from './curl/command';
 import { deployCommand } from './deploy/command';
+import { deployHooksCommand } from './deploy-hooks/command';
 import { devCommand } from './dev/command';
 import { dnsCommand } from './dns/command';
 import { domainsCommand } from './domains/command';
@@ -62,6 +65,7 @@ import output from '../output-manager';
 
 const commandsStructs = [
   agentCommand,
+  aiGatewayCommand,
   alertsCommand,
   aliasCommand,
   activityCommand,
@@ -76,6 +80,7 @@ const commandsStructs = [
   cronsCommand,
   curlCommand,
   deployCommand,
+  deployHooksCommand,
   devCommand,
   dnsCommand,
   domainsCommand,
@@ -126,8 +131,10 @@ if (process.env.FF_GUIDANCE_MODE) {
   commandsStructs.push(guidanceCommand);
 }
 
-if (process.env.FF_METRICS) {
-  commandsStructs.push(metricsCommand);
+commandsStructs.push(metricsCommand);
+
+if (process.env.FF_CONNEX_ENABLED) {
+  commandsStructs.push(connexCommand);
 }
 
 export function getCommandAliases(command: Pick<Command, 'name' | 'aliases'>) {

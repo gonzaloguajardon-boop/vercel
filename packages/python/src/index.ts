@@ -1,3 +1,4 @@
+import assert from 'assert';
 import { execSync } from 'child_process';
 import fs from 'fs';
 import { join, dirname, basename, parse } from 'path';
@@ -45,8 +46,14 @@ import {
 } from './uv';
 import { resolvePythonVersion, pythonVersionString } from './version';
 import { generateProjectManifest } from './diagnostics';
+import { buildCronRouteTable, getServiceCrons } from './crons';
 import { startDevServer } from './start-dev-server';
-import { runPyprojectScript, ensureVenv, createVenvEnv } from './utils';
+import {
+  runPyprojectScript,
+  ensureVenv,
+  createVenvEnv,
+  getVenvPythonBin,
+} from './utils';
 import { runQuirks } from './quirks';
 import {
   getDjangoSettings,
@@ -248,11 +255,27 @@ export const build: BuildVX = async ({
   // Entrypoint discovery
   let detected: DetectedPythonEntrypoint | undefined;
 
+  const handlerFunction =
+    typeof config?.handlerFunction === 'string'
+      ? config.handlerFunction
+      : undefined;
+
   detected =
     (await detectPythonEntrypoint(
       config.framework as PythonFramework,
       workPath,
-      entrypoint,
+      entrypoint
+        ? {
+            filePath: entrypoint,
+            // For schedule-triggered jobs, the WSGI variable is always 'app' (created dynamically).
+            // For other services, handlerFunction is used as the entrypoint variable name.
+            varName:
+              service?.type === 'cron' ||
+              (service?.type === 'job' && service.trigger === 'schedule')
+                ? undefined
+                : handlerFunction,
+          }
+        : undefined,
       service
     )) ?? undefined;
 
@@ -284,20 +307,19 @@ export const build: BuildVX = async ({
         rootDir,
       });
       versionSpan.setAttributes({
-        'python.version': pythonVersionString(resolution.pythonVersion),
+        'python.version':
+          pythonVersionString(resolution.pythonVersion) ?? 'unknown',
         'python.versionSource': resolution.versionSource,
       });
       return resolution;
     });
 
   if (pinVersionFilePath) {
-    console.log(
-      `Writing .python-version file with version ${pythonVersionString(pythonVersion)}`
-    );
-    await writeFile(
-      pinVersionFilePath,
-      `${pythonVersionString(pythonVersion)}\n`
-    );
+    const versionToPin = pythonVersionString(pythonVersion);
+    if (versionToPin) {
+      console.log(`Writing .python-version file with version ${versionToPin}`);
+      await writeFile(pinVersionFilePath, `${versionToPin}\n`);
+    }
   }
 
   // Create a virtual environment so dependencies can be installed via
@@ -305,10 +327,27 @@ export const build: BuildVX = async ({
   // part of a named service, namespace the venv so multiple services sharing
   // the same source don't overwrite each other's artifacts in case of custom
   // installCommand or buildCommand.
+  const uvCacheDir = getUvCacheDir(workPath);
+  let uv: UvRunner;
+  try {
+    const uvPath = await getUvBinaryOrInstall(pythonVersion.pythonPath);
+    uv = new UvRunner(uvPath, uvCacheDir);
+    const uvVersionOutput = execSync(`${uvPath} --version`, {
+      encoding: 'utf8',
+    }).trim();
+    console.log(`Using ${uvVersionOutput}`);
+  } catch (err) {
+    console.log('Failed to install or locate uv');
+    throw new Error(
+      `uv is required for this project but failed to install: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  }
+
   const venvPath = service?.name
     ? join(workPath, '.vercel', 'python', 'services', service.name, '.venv')
     : join(workPath, '.vercel', 'python', '.venv');
-  const uvCacheDir = getUvCacheDir(workPath);
   const hasCachedVenv = fs.existsSync(join(venvPath, 'pyvenv.cfg'));
   const hasCachedUv = fs.existsSync(uvCacheDir);
   if (hasCachedVenv || hasCachedUv) {
@@ -320,6 +359,7 @@ export const build: BuildVX = async ({
     await ensureVenv({
       pythonVersion,
       venvPath,
+      uvPath: uv.getPath(),
       uvCacheDir,
     });
   });
@@ -362,23 +402,6 @@ export const build: BuildVX = async ({
   // virtualenv
   let assumeDepsInstalled = false;
 
-  let uv: UvRunner;
-  try {
-    const uvPath = await getUvBinaryOrInstall(pythonVersion.pythonPath);
-    uv = new UvRunner(uvPath, uvCacheDir);
-    const uvVersionOutput = execSync(`${uvPath} --version`, {
-      encoding: 'utf8',
-    }).trim();
-    console.log(`Using ${uvVersionOutput}`);
-  } catch (err) {
-    console.log('Failed to install or locate uv');
-    throw new Error(
-      `uv is required for this project but failed to install: ${
-        err instanceof Error ? err.message : String(err)
-      }`
-    );
-  }
-
   // Track the lock file path and project info for package classification (used when runtime install is enabled)
   let uvLockPath: string | null = null;
   let uvProjectDir: string | null = null;
@@ -396,6 +419,7 @@ export const build: BuildVX = async ({
         await ensureVenv({
           pythonVersion,
           venvPath,
+          uvPath: uv.getPath(),
           uvCacheDir,
           quiet: true,
         });
@@ -595,10 +619,6 @@ export const build: BuildVX = async ({
 
   debug('Entrypoint is', entrypoint);
   const moduleName = entrypoint.replace(/\//g, '.').replace(/\.py$/i, '');
-  const handlerFunction =
-    typeof config?.handlerFunction === 'string'
-      ? config.handlerFunction
-      : undefined;
 
   if (handlerFunction) {
     const entrypointPath = join(workPath, entrypoint);
@@ -621,9 +641,30 @@ export const build: BuildVX = async ({
   const entrypointWithSuffix = `${entrypoint}${suffix}`;
   debug('Entrypoint with suffix is', entrypointWithSuffix);
 
-  const handlerFuncEnvLine = handlerFunction
-    ? `\n  "__VC_HANDLER_FUNC_NAME": "${handlerFunction}",`
-    : '';
+  const crons = await getServiceCrons({
+    service,
+    entrypoint,
+    rawEntrypoint,
+    handlerFunction,
+    pythonBin: getVenvPythonBin(venvPath),
+    env: pythonEnv,
+    workPath,
+  });
+
+  // Build trampoline env line for cron routing.
+  // Injected into os.environ.update() in the Python trampoline source,
+  // not lambdaEnv, because the platform rejects env var names with
+  // leading underscores.
+  let cronEnvLine = '';
+  if (crons?.length) {
+    // Single-quote the JSON so embedded double quotes don't need escaping
+    // in the surrounding Python dict literal. Backslashes would be
+    // misinterpreted by Python's string parser, but cron paths/handlers
+    // only contain [a-zA-Z0-9_./:-] so JSON.stringify won't produce any.
+    const json = JSON.stringify(buildCronRouteTable(crons));
+    assert(!json.includes('\\'), `backslash in cron route table: ${json}`);
+    cronEnvLine = `\n  "__VC_CRON_ROUTES": '${json}',`;
+  }
 
   const variableName = resolved?.variableName ?? '';
 
@@ -641,7 +682,7 @@ os.environ.update({
   "__VC_HANDLER_ENTRYPOINT": "${entrypointWithSuffix}",
   "__VC_HANDLER_ENTRYPOINT_ABS": os.path.join(_here, "${entrypointWithSuffix}"),
   "__VC_HANDLER_VENDOR_DIR": "${vendorDir}",
-  "__VC_HANDLER_VARIABLE_NAME": "${variableName}",${handlerFuncEnvLine}
+  "__VC_HANDLER_VARIABLE_NAME": "${variableName}",${cronEnvLine}
 })
 
 _vendor_rel = '${vendorDir}'
@@ -777,14 +818,16 @@ from vercel_runtime.vc_init import vc_handler
   });
 
   // Write project manifest for diagnostics (best-effort, never fails the build).
-  // Requires uv.lock to resolve versions and dependency graph.
-  if (uvLockPath) {
+  // Requires uv.lock to resolve versions and dependency graph.  Skipped in
+  // `vercel dev` since the CLI only reads the manifest in `vercel build`.
+  if (uvLockPath && !meta.isDev) {
     try {
       await generateProjectManifest({
         workPath,
         pythonPackage,
         pythonVersion,
         uvLockPath,
+        framework,
       });
     } catch (err) {
       debug(
@@ -793,7 +836,7 @@ from vercel_runtime.vc_init import vc_handler
     }
   }
 
-  if (!isPythonFramework(framework)) {
+  if (!isPythonFramework(framework) && !service?.name) {
     return { resultVersion: 3, result: { output } };
   }
 
@@ -805,6 +848,12 @@ from vercel_runtime.vc_init import vc_handler
     ? await glob('**', { cwd: djangoStatic.cdnOutputDir })
     : {};
 
+  // for services routing is handled by fs-detectors, for legacy builds
+  // we still need to provide catch-all route
+  const routes = service?.name
+    ? undefined
+    : [{ handle: 'filesystem' }, { src: '/(.*)', dest: `/${lambdaPath}` }];
+
   return {
     resultVersion: 2,
     result: {
@@ -812,10 +861,8 @@ from vercel_runtime.vc_init import vc_handler
         [lambdaPath]: output,
         ...staticFiles,
       },
-      routes: [
-        { handle: 'filesystem' },
-        { src: '/(.*)', dest: `/${lambdaPath}` },
-      ],
+      ...(routes ? { routes } : {}),
+      crons,
     },
   };
 };

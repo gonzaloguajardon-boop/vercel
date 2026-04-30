@@ -550,6 +550,8 @@ test('add a sensitive env var', async () => {
   expect(output.stderr).toContain(
     'Added Environment Variable envVarName to Project'
   );
+
+  await apiFetch(`/v2/projects/${projectName}`, { method: 'DELETE' });
 });
 
 test('override an existing env var', async () => {
@@ -612,6 +614,8 @@ test('override an existing env var', async () => {
   expect(outputOverride.stderr).toContain(
     'Overrode Environment Variable envVarName to Project'
   );
+
+  await apiFetch(`/v2/projects/${projectName}`, { method: 'DELETE' });
 });
 
 test('whoami with `VERCEL_ORG_ID` should favor `--scope` and should error', async () => {
@@ -938,6 +942,15 @@ test.skip('deploy pnpm twice using pnp and symlink=false', async () => {
   });
 });
 
+// The deploy refuses for one of two reasons depending on whether the team has
+// SAML enforcement: either the API returns a plain `forbidden` 403 (handled by
+// `getLinkedProject` in `src/util/projects/link.ts`), or it returns a SAML
+// challenge that we now bail on in `src/util/login/reauthenticate.ts` (see the
+// non-interactive / external-token guards). Both messages are acceptable; what
+// matters for these tests is that the deploy exits 1 and tells the user why.
+const unauthorizedDeployErrorRe =
+  /Could not retrieve Project Settings\. To link your Project, remove the `\.vercel` directory and deploy again\.|(?:SAML )?[Rr]e-authentication is required for .* scope/;
+
 test('reject deploying with wrong team .vercel config', async () => {
   const directory = await setupE2EFixture('unauthorized-vercel-config');
 
@@ -946,9 +959,7 @@ test('reject deploying with wrong team .vercel config', async () => {
   });
 
   expect(exitCode, formatOutput({ stdout, stderr })).toBe(1);
-  expect(stderr).toContain(
-    'Could not retrieve Project Settings. To link your Project, remove the `.vercel` directory and deploy again.'
-  );
+  expect(stderr).toMatch(unauthorizedDeployErrorRe);
 });
 
 test('reject deploying with invalid token', async () => {
@@ -958,9 +969,7 @@ test('reject deploying with invalid token', async () => {
   });
 
   expect(exitCode, formatOutput({ stdout, stderr })).toBe(1);
-  expect(stderr).toMatch(
-    /Error: Could not retrieve Project Settings\. To link your Project, remove the `\.vercel` directory and deploy again\./g
-  );
+  expect(stderr).toMatch(unauthorizedDeployErrorRe);
 });
 
 test('[vc link] should detect frameworks in project rootDirectory', async () => {

@@ -1,5 +1,17 @@
 # @vercel/frameworks
 
+## 3.24.2
+
+### Patch Changes
+
+- 09d9000: Fix the frameworks demo URL public-access test to check the public `/_logs` route instead of looking up alias hosts through the deployments API.
+
+## 3.24.1
+
+### Patch Changes
+
+- Add actix framework preset ([#15752](https://github.com/vercel/vercel/pull/15752))
+
 ## 3.24.0
 
 ### Minor Changes
