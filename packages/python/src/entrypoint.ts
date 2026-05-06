@@ -3,8 +3,10 @@ import { join, posix as pathPosix } from 'path';
 import {
   PythonFramework,
   NowBuildError,
+  isPythonFramework,
   isScheduleTriggeredService,
   isQueueTriggeredService,
+  type DetectEntrypointFn,
   type ServiceType,
   type JobTrigger,
 } from '@vercel/build-utils';
@@ -556,3 +558,30 @@ export async function detectPythonEntrypoint(
   };
   return { error: makeDiagnosticError(framework, diagnostics) };
 }
+
+/**
+ * Normalized entrypoint detector for Python services. Wraps
+ * {@link detectPythonEntrypoint} and converts the result into the shared
+ * {@link DetectedEntrypoint} shape consumed by services auto-detection.
+ *
+ * Returns `null` for non-Python frameworks, when no entrypoint is found,
+ * and for Django when only a `manage.py` baseDir was discovered (the
+ * Django framework hook resolves the WSGI/ASGI entrypoint at build time).
+ */
+export const detectEntrypoint: DetectEntrypointFn = async ({
+  workPath,
+  framework,
+}) => {
+  if (!isPythonFramework(framework)) return null;
+  const detected = await detectPythonEntrypoint(
+    framework as PythonFramework,
+    workPath
+  );
+  if (!detected?.entrypoint) return null;
+  const { entrypoint, variableName } = detected.entrypoint;
+  const modulePath = entrypoint.replace(/\.py$/, '').replace(/\//g, '.');
+  return {
+    kind: 'py-module:attr',
+    entrypoint: `${modulePath}:${variableName}`,
+  };
+};
