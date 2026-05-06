@@ -26,6 +26,7 @@ export {
   getBuildSummary,
   srvxOptions,
 } from './cervel/index.js';
+export { detectEntrypoint } from './find-entrypoint.js';
 export type {
   CervelBuildOptions,
   CervelServeOptions,
