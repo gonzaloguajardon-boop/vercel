@@ -1,5 +1,6 @@
 import type { Route } from '@vercel/routing-utils';
 import type {
+  DetectEntrypointFn,
   ExperimentalServiceConfig,
   ExperimentalServiceGroups,
   ExperimentalServices,
@@ -11,6 +12,7 @@ import type {
 import type { DetectorFilesystem } from '../detectors/filesystem';
 
 export type {
+  DetectEntrypointFn,
   ExperimentalServiceConfig,
   ExperimentalServiceGroups,
   ExperimentalServices,
@@ -32,6 +34,12 @@ export interface DetectServicesOptions {
    * If provided, vercel.json is read from this path.
    */
   workPath?: string;
+  /**
+   * Optional callback that, given a candidate service directory and its
+   * detected framework, returns a normalized entrypoint (file path or
+   * `module:attr` reference). Used to suggested service configs.
+   */
+  detectEntrypoint?: DetectEntrypointFn;
 }
 
 export interface ServicesRoutes {

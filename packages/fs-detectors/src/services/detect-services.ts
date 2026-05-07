@@ -68,6 +68,10 @@ function toInferredLayoutConfig(services: ServicesConfig): ServicesConfig {
   for (const [name, service] of Object.entries(services)) {
     const serviceConfig: ServicesConfig[string] = {};
 
+    if (typeof service.root === 'string') {
+      serviceConfig.root = service.root;
+    }
+
     if (typeof service.entrypoint === 'string') {
       serviceConfig.entrypoint = service.entrypoint;
     }
@@ -100,7 +104,7 @@ function toInferredLayoutConfig(services: ServicesConfig): ServicesConfig {
 export async function detectServices(
   options: DetectServicesOptions
 ): Promise<DetectServicesResult> {
-  const { fs, workPath } = options;
+  const { fs, workPath, detectEntrypoint } = options;
 
   // Scope filesystem to workPath if provided
   const scopedFs = workPath ? fs.chdir(workPath) : fs;
@@ -126,7 +130,10 @@ export async function detectServices(
   // Try auto-detection
   if (!hasConfiguredServices) {
     // Try Railway config detection first
-    const railwayResult = await detectRailwayServices({ fs: scopedFs });
+    const railwayResult = await detectRailwayServices({
+      fs: scopedFs,
+      detectEntrypoint,
+    });
     if (railwayResult.errors.length > 0) {
       return withResolvedResult({
         services: [],
@@ -168,7 +175,10 @@ export async function detectServices(
     }
 
     // Fall back to layout-based auto-detection
-    const autoResult = await autoDetectServices({ fs: scopedFs });
+    const autoResult = await autoDetectServices({
+      fs: scopedFs,
+      detectEntrypoint,
+    });
     if (autoResult.services && autoResult.errors.length === 0) {
       const result = await resolveAllConfiguredServices(
         autoResult.services,
