@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildCronRouteTable, getServiceCrons } from '../src/crons';
+import { tsImport } from 'tsx/esm/api';
+import {
+  buildCronRouteTable,
+  getServiceCrons,
+  type CronEntryImporter,
+} from '../src/crons';
+
+const TS_IMPORTER: CronEntryImporter = (specifier: string) =>
+  tsImport(specifier, import.meta.url);
 
 describe('getServiceCrons', () => {
   it('returns undefined for non-schedule-triggered services', async () => {
@@ -112,12 +120,17 @@ describe('getServiceCrons (<dynamic>)', () => {
     await rm(bundleDir, { recursive: true, force: true });
   });
 
-  async function detect(handler: string, source: string) {
+  async function detect(
+    handler: string,
+    source: string,
+    importer?: CronEntryImporter
+  ) {
     await writeFile(join(bundleDir, handler), source, 'utf-8');
     return getServiceCrons({
       service: { type: 'cron', name: 'tasks', schedule: '<dynamic>' },
       entrypoint: handler,
       bundle: { dir: bundleDir, handler },
+      importer,
     });
   }
 
@@ -250,6 +263,40 @@ export function hourly() {}
       )
     ).rejects.toThrow(/duplicate cron entry handler/);
   });
+
+  // Dev-mode path: the user entrypoint is a .ts source file, so the
+  // caller plugs in a tsx-aware importer.
+  it.skipIf(process.platform === 'win32')(
+    'detects entries from a TypeScript user module via tsImport',
+    async () => {
+      const result = await detect(
+        'task.ts',
+        `
+export async function alpha(): Promise<void> {}
+export async function beta(): Promise<void> {}
+export default async function (): Promise<unknown[]> {
+  return [
+    { handler: 'alpha', schedule: '* * * * *' },
+    { handler: 'beta',  schedule: '*/5 * * * *' },
+  ];
+}
+`,
+        TS_IMPORTER
+      );
+      expect(result).toEqual([
+        {
+          path: '/_svc/tasks/crons/task/alpha',
+          schedule: '* * * * *',
+          exportName: 'alpha',
+        },
+        {
+          path: '/_svc/tasks/crons/task/beta',
+          schedule: '*/5 * * * *',
+          exportName: 'beta',
+        },
+      ]);
+    }
+  );
 });
 
 describe('buildCronRouteTable', () => {
