@@ -366,7 +366,7 @@ export async function stageBundleOnDisk(opts: {
 
 async function readFileData(
   file: unknown
-): Promise<Buffer | string | undefined> {
+): Promise<Uint8Array | string | undefined> {
   if (file && typeof file === 'object') {
     if ('data' in file) {
       const data = (file as { data: unknown }).data;
